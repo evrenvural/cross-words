@@ -1,17 +1,14 @@
+import cn from 'classnames';
+import Animated from 'react-native-reanimated';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 
-import {
-  NativeSyntheticEvent,
-  Text,
-  TextInput,
-  TextInputKeyPressEventData,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { Keyboard as NativeKeyboard, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { StatusBar } from 'expo-status-bar';
+
+import { Keyboard } from '../components/ui/keyboard';
 
 interface WordPlaced {
   answer: string;
@@ -37,6 +34,11 @@ interface UserAnswers {
 
 interface InputRefs {
   [key: string]: TextInput | null;
+}
+
+interface ActiveQuestion {
+  word: WordPlaced;
+  index: number;
 }
 
 const PUZZLE_DATA: PuzzleData = {
@@ -205,7 +207,10 @@ const PUZZLE_DATA: PuzzleData = {
 
 function Game() {
   const [userAnswers, setUserAnswers] = useState<UserAnswers>({});
-  const inputRefs = useRef<InputRefs>({});
+  const [selectedCell, setSelectedCell] = useState<string | null>(null);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [activeQuestion, setActiveQuestion] = useState<ActiveQuestion | null>(null);
+  const [showHint, setShowHint] = useState(false);
 
   // Sonraki hücreyi bulma fonksiyonu
   const findNextCell = (currentRow: number, currentCol: number): string | null => {
@@ -285,32 +290,101 @@ function Game() {
     return null;
   };
 
-  const handleKeyPress = (
-    e: NativeSyntheticEvent<TextInputKeyPressEventData>,
-    rowIndex: number,
-    colIndex: number
-  ) => {
-    const cellKey = `${rowIndex}_${colIndex}`;
+  const handleKeyPress = (key: string) => {
+    if (!selectedCell) return;
 
-    if (e.nativeEvent.key === 'Backspace' && !userAnswers[cellKey]) {
-      // Eğer mevcut hücre boşsa ve backspace'e basıldıysa
+    const [rowIndex, colIndex] = selectedCell.split('_').map(Number);
+
+    if (key.length === 1) {
+      setUserAnswers((prev) => ({
+        ...prev,
+        [selectedCell]: key,
+      }));
+
+      // Sonraki hücreyi bul ve seç
+      const nextCellKey = findNextCell(rowIndex, colIndex);
+      if (nextCellKey) {
+        setSelectedCell(nextCellKey);
+      }
+    }
+  };
+
+  const handleBackspace = () => {
+    if (!selectedCell) return;
+
+    const [rowIndex, colIndex] = selectedCell.split('_').map(Number);
+
+    if (!userAnswers[selectedCell]) {
+      // Eğer mevcut hücre boşsa
       const prevCellKey = findPreviousCell(rowIndex, colIndex);
-      if (prevCellKey && inputRefs.current[prevCellKey]) {
-        // Önceki hücredeki harfi sil
+      if (prevCellKey) {
         setUserAnswers((prev) => ({
           ...prev,
           [prevCellKey]: '',
         }));
-        // Önceki hücreye focus'lan
-        inputRefs.current[prevCellKey].focus();
+        setSelectedCell(prevCellKey);
       }
+    } else {
+      // Mevcut hücredeki harfi sil
+      setUserAnswers((prev) => ({
+        ...prev,
+        [selectedCell]: '',
+      }));
     }
+  };
+
+  const handleCellPress = (rowIndex: number, colIndex: number) => {
+    const cellKey = `${rowIndex}_${colIndex}`;
+    setSelectedCell(cellKey);
+    setIsKeyboardVisible(true);
+    NativeKeyboard.dismiss();
+
+    // Seçili hücrenin bulunduğu kelimeyi bul
+    const selectedWords = PUZZLE_DATA.wordsPlaced.filter((word) =>
+      word.coords.some(([row, col]) => row === rowIndex && col === colIndex)
+    );
+
+    if (selectedWords.length > 0) {
+      const wordIndex = PUZZLE_DATA.wordsPlaced.findIndex((w) => w === selectedWords[0]);
+      setActiveQuestion({ word: selectedWords[0], index: wordIndex + 1 });
+    }
+  };
+
+  const handleCancel = () => {
+    setSelectedCell(null);
+    setIsKeyboardVisible(false);
+    setActiveQuestion(null);
+    setShowHint(false);
+  };
+
+  const handleHint = () => {
+    setShowHint(true);
+  };
+
+  const handleComplete = () => {
+    setSelectedCell(null);
+    setIsKeyboardVisible(false);
+    setActiveQuestion(null);
+    setShowHint(false);
   };
 
   const renderCell = (rowIndex: number, colIndex: number) => {
     const cellKey = `${rowIndex}_${colIndex}`;
     const correctLetter = PUZZLE_DATA.grid[cellKey];
     const isBlank = correctLetter === '@';
+    const isSelected = selectedCell === cellKey;
+
+    // Seçili hücrenin bulunduğu kelimeyi bul
+    const selectedWord = selectedCell
+      ? PUZZLE_DATA.wordsPlaced.find((word) =>
+          word.coords.some(([row, col]) => `${row}_${col}` === selectedCell)
+        )
+      : null;
+
+    // Hücrenin seçili kelimede olup olmadığını kontrol et
+    const isPartOfSelectedWord = selectedWord?.coords.some(
+      ([row, col]) => row === rowIndex && col === colIndex
+    );
 
     const wordStart = PUZZLE_DATA.wordsPlaced.find(
       (word) => word.startX === rowIndex && word.startY === colIndex
@@ -333,12 +407,23 @@ function Game() {
       );
     }
 
+    const cellClassName = cn('w-[45px] h-[45px]', 'relative', {
+      'bg-[#90EE90]': userAnswer && isCorrect,
+      'bg-white': !userAnswer || !isCorrect,
+      'border-2 border-blue-500': isSelected,
+      'border-2 border-blue-300': !isSelected && isPartOfSelectedWord,
+      'border border-black': !isSelected && !isPartOfSelectedWord,
+      'bg-blue-50': isPartOfSelectedWord,
+    });
+
     return (
-      <View
+      <TouchableOpacity
         key={`cell-${rowIndex}-${colIndex}`}
-        className={`w-[45px] h-[45px] ${
-          userAnswer ? (isCorrect ? 'bg-[#90EE90]' : 'bg-white') : 'bg-white'
-        } border border-black relative`}
+        onPress={(e) => {
+          e.stopPropagation();
+          handleCellPress(rowIndex, colIndex);
+        }}
+        className={cellClassName}
       >
         {wordStart && (
           <View className="absolute top-0.5 left-0.5 flex-row items-center bg-white/80 p-0.5 rounded z-10">
@@ -348,89 +433,90 @@ function Game() {
             </Text>
           </View>
         )}
-        <TextInput
-          ref={(ref) => (inputRefs.current[cellKey] = ref)}
-          className="w-full h-full text-center text-xl font-bold text-black uppercase"
-          maxLength={1}
-          value={userAnswer}
-          onChangeText={(text) => {
-            if (text.length > 0) {
-              setUserAnswers((prev) => ({
-                ...prev,
-                [cellKey]: text,
-              }));
-
-              // Sonraki hücreyi bul ve focus'la
-              const nextCellKey = findNextCell(rowIndex, colIndex);
-              if (nextCellKey && inputRefs.current[nextCellKey]) {
-                inputRefs.current[nextCellKey].focus();
-              }
-            }
-          }}
-          onKeyPress={(e) => handleKeyPress(e, rowIndex, colIndex)}
-        />
-      </View>
+        <Text className="w-full h-full text-center text-xl font-bold text-black uppercase leading-[45px]">
+          {userAnswer}
+        </Text>
+      </TouchableOpacity>
     );
   };
 
   return (
     <SafeAreaView className="flex-1 bg-white">
-      {/* Header */}
-      <View className="p-4 border-b border-black flex-row justify-between items-center">
-        <Text className="text-2xl font-bold text-black">Çengel Bulmaca</Text>
-        <TouchableOpacity
-          onPress={() => setUserAnswers({})}
-          className="bg-black px-3 py-2 rounded-lg"
-          activeOpacity={0.7}
-        >
-          <Text className="text-white font-medium text-sm">Sıfırla</Text>
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity activeOpacity={1} onPress={handleCancel} className="flex-1">
+        {/* Header */}
+        <View className="p-4 border-b border-black flex-row justify-between items-center">
+          <Text className="text-2xl font-bold text-black">Çengel Bulmaca</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setUserAnswers({});
+              setSelectedCell(null);
+              setIsKeyboardVisible(false);
+            }}
+            className={cn('bg-black', 'px-3', 'py-2', 'rounded-lg')}
+            activeOpacity={0.7}
+          >
+            <Text className="text-white font-medium text-sm">Sıfırla</Text>
+          </TouchableOpacity>
+        </View>
 
-      {/* Puzzle Grid */}
-      <View className="flex-1 p-4 bg-white">
-        <View className="items-center justify-center flex-1">
-          <View className="bg-white border-2 border-black">
-            {[...Array(PUZZLE_DATA.rows)].map((_, rowIndex) => (
-              <View key={`row-${rowIndex}`} className="flex-row">
-                {[...Array(PUZZLE_DATA.columns)].map((_, colIndex) =>
-                  renderCell(rowIndex, colIndex)
+        {/* Puzzle Grid */}
+        <View className={cn('flex-1', 'p-4', 'bg-white')}>
+          <View className="items-center justify-center flex-1">
+            {activeQuestion && (
+              <View className="bg-white p-4 rounded-lg shadow-lg mb-4 w-full">
+                <Text className="text-lg font-bold text-black mb-2">
+                  Soru {activeQuestion.index}
+                </Text>
+                <Text className="text-black">{activeQuestion.word.description}</Text>
+                {showHint && (
+                  <Text className="text-blue-500 mt-2">
+                    İpucu: {activeQuestion.word.answer.length} harf
+                  </Text>
                 )}
               </View>
-            ))}
+            )}
+            <View className="bg-white border-2 border-black">
+              {[...Array(PUZZLE_DATA.rows)].map((_, rowIndex) => (
+                <View key={`row-${rowIndex}`} className="flex-row">
+                  {[...Array(PUZZLE_DATA.columns)].map((_, colIndex) =>
+                    renderCell(rowIndex, colIndex)
+                  )}
+                </View>
+              ))}
+            </View>
           </View>
         </View>
-      </View>
 
-      {/* Clues Section */}
-      <View className="bg-gray-100 p-4 border-t border-black">
-        <Text className="text-lg font-bold text-black mb-3">Sorular</Text>
-
-        {/* Horizontal Clues */}
-        <View className="mb-3">
-          <Text className="text-black font-semibold mb-1">Soldan Sağa:</Text>
-          {PUZZLE_DATA.wordsPlaced
-            .filter((word) => word.orientation === 'horizontal')
-            .map((word, index) => (
-              <Text key={index} className="text-black text-sm my-0.5">
-                {index + 1}. {word.description}
-              </Text>
-            ))}
-        </View>
-
-        {/* Vertical Clues */}
-        <View>
-          <Text className="text-black font-semibold mb-1">Yukarıdan Aşağıya:</Text>
-          {PUZZLE_DATA.wordsPlaced
-            .filter((word) => word.orientation === 'vertical')
-            .map((word, index) => (
-              <Text key={index} className="text-black text-sm my-0.5">
-                {index + 1}. {word.description}
-              </Text>
-            ))}
-        </View>
-      </View>
-      <StatusBar style="dark" />
+        {/* Keyboard and Controls */}
+        <Animated.View className="absolute bottom-0 left-0 right-0">
+          {isKeyboardVisible && (
+            <>
+              <View className="flex-row justify-between bg-gray-100 px-4 py-2">
+                <TouchableOpacity
+                  onPress={handleCancel}
+                  className="bg-orange-500 px-6 py-2 rounded-lg"
+                >
+                  <Text className="text-white font-medium">İptal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleHint}
+                  className="bg-orange-500 px-6 py-2 rounded-lg"
+                >
+                  <Text className="text-white font-medium">İpucu</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleComplete}
+                  className="bg-green-500 px-6 py-2 rounded-lg"
+                >
+                  <Text className="text-white font-medium">Tamam</Text>
+                </TouchableOpacity>
+              </View>
+              <Keyboard onKeyPress={handleKeyPress} onBackspace={handleBackspace} />
+            </>
+          )}
+        </Animated.View>
+        <StatusBar style="dark" />
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
